@@ -1,5 +1,9 @@
 #include "SeeedmmWave.h"
 
+#include <utility>
+
+#include "FrameCodec.h"
+
 /**
  * @brief Print the buffer content in hexadecimal format.
  *
@@ -62,11 +66,8 @@ void printHexBuff(const std::vector<uint8_t>& buffer) {
  * length and checksum size to the frame header size.
  */
 size_t SeeedmmWave::expectedFrameLength(const std::vector<uint8_t>& buffer) {
-  if (buffer.size() < SIZE_FRAME_HEADER) {
-    return SIZE_FRAME_HEADER;  // minimum frame header size
-  }
-  size_t len = (buffer[3] << 8) | buffer[4];
-  return SIZE_FRAME_HEADER + len + SIZE_DATA_CKSUM;
+  return seeed::mmwave::FrameCodec::expectedLength(buffer.data(),
+                                                   buffer.size());
 }
 
 /**
@@ -80,12 +81,7 @@ size_t SeeedmmWave::expectedFrameLength(const std::vector<uint8_t>& buffer) {
  * @return The calculated checksum.
  */
 uint8_t SeeedmmWave::calculateChecksum(const uint8_t* data, size_t len) {
-  uint8_t checksum = 0;
-  for (size_t i = 0; i < len; i++) {
-    checksum ^= data[i];
-  }
-  checksum = ~checksum;
-  return checksum;
+  return seeed::mmwave::FrameCodec::checksum(data, len);
 }
 
 /**
@@ -113,21 +109,7 @@ bool SeeedmmWave::validateChecksum(const uint8_t* data, size_t len,
  * @param bytes The byte array to store the converted value.
  */
 void SeeedmmWave::floatToBytes(float value, uint8_t* bytes) {
-  union {
-    float f;
-    uint8_t bytes[sizeof(float)];
-  } floatUnion;
-
-  floatUnion.f = value;
-#if SEEED_WAVE_IS_BIG_ENDIAN == 1
-  for (size_t i = 0; i < sizeof(float); ++i) {
-    bytes[i] = floatUnion.bytes[sizeof(float) - 1 - i];
-  }
-#else
-  for (size_t i = 0; i < sizeof(float); ++i) {
-    bytes[i] = floatUnion.bytes[i];
-  }
-#endif
+  seeed::mmwave::FrameCodec::writeFloatLE(value, bytes);
 }
 
 /**
@@ -139,10 +121,7 @@ void SeeedmmWave::floatToBytes(float value, uint8_t* bytes) {
  * @param bytes The byte array to store the converted value.
  */
 void SeeedmmWave::uint32ToBytes(uint32_t value, uint8_t* bytes) {
-  uint8_t* p = reinterpret_cast<uint8_t*>(&value);
-  for (size_t i = 0; i < sizeof(uint32_t); ++i) {
-    bytes[i] = p[i];
-  }
+  seeed::mmwave::FrameCodec::writeU32LE(value, bytes);
 }
 
 /**
@@ -152,7 +131,7 @@ void SeeedmmWave::uint32ToBytes(uint32_t value, uint8_t* bytes) {
  * @return The extracted float value.
  */
 float SeeedmmWave::extractFloat(const uint8_t* bytes) const {
-  return *reinterpret_cast<const float*>(bytes);
+  return seeed::mmwave::FrameCodec::readFloatLE(bytes);
 }
 
 /**
@@ -165,7 +144,7 @@ float SeeedmmWave::extractFloat(const uint8_t* bytes) const {
  * @return The extracted 32-bit unsigned integer.
  */
 uint32_t SeeedmmWave::extractU32(const uint8_t* bytes) const {
-  return *reinterpret_cast<const uint32_t*>(bytes);
+  return seeed::mmwave::FrameCodec::readU32LE(bytes);
 }
 
 /**
@@ -190,13 +169,34 @@ void SeeedmmWave::begin(HardwareSerial* serial, uint32_t baud,
   _serial->begin(_baud);
   _serial->setTimeout(1000);
 
-  // _serial->setRxFIFOFull(20);
   if (rst >= 0) {
     pinMode(rst, OUTPUT);
     digitalWrite(rst, LOW);
     delay(50);
     digitalWrite(rst, HIGH);
     delay(500);
+  }
+
+  // Sensor boot text shares the UART. Hold briefly, then discard it so the
+  // assembler locks onto a real SOF instead of a 0x01 in the banner.
+  // 上电横幅和雷达数据共用串口：先等一会儿再丢掉噪声，再重新锁帧。
+  const uint32_t flush_ms = (_wait_delay > 1) ? _wait_delay : 100;
+  delay(flush_ms);
+  resync();
+}
+
+void SeeedmmWave::drainSerial() {
+  if (!_serial) return;
+  while (_serial->available() > 0) {
+    _serial->read();
+  }
+}
+
+void SeeedmmWave::resync() {
+  drainSerial();
+  _assembler.reset();
+  while (!byteQueue.empty()) {
+    byteQueue.pop();
   }
 }
 
@@ -248,28 +248,29 @@ size_t SeeedmmWave::write(const char* buffer, size_t size) {
  */
 bool SeeedmmWave::processFrame(const uint8_t* frame_bytes, size_t len,
                                uint16_t data_type) {
-  if (len < SIZE_FRAME_HEADER)
-    return false;  // Not enough data to process header
-
-  uint16_t id        = (frame_bytes[1] << 8) | frame_bytes[2];
-  uint16_t data_len  = (frame_bytes[3] << 8) | frame_bytes[4];
-  uint16_t type      = (frame_bytes[5] << 8) | frame_bytes[6];
-  uint8_t head_cksum = frame_bytes[7];
-  uint8_t data_cksum = frame_bytes[SIZE_FRAME_HEADER + data_len];
-
-  // Only proceed if the type matches or if data_type is set to the default,
-  // indicating no specific type is required
-  if (data_type != 0xFFFF && data_type != type)
-    return false;
-  // Checksum validation6
-  if (!validateChecksum(frame_bytes, SIZE_FRAME_HEADER - SIZE_DATA_CKSUM,
-                        head_cksum) ||
-      !validateChecksum(&frame_bytes[SIZE_FRAME_HEADER], data_len,
-                        data_cksum)) {
+  seeed::mmwave::DecodedFrame decoded;
+  const seeed::mmwave::Status st =
+      seeed::mmwave::FrameCodec::tryDecode(frame_bytes, len, decoded);
+  if (st != seeed::mmwave::Status::Ok) {
     return false;
   }
 
-  return handleType(type, &frame_bytes[SIZE_FRAME_HEADER], data_len);
+  // Apply every valid frame so a type-filtered wait does not drop vitals.
+  // 先把有效帧写进状态，按类型过滤时也不会丢掉呼吸/心率。
+  const bool handled = handleType(decoded.type, decoded.data, decoded.data_len);
+  if (data_type != 0xFFFF && data_type != decoded.type) {
+    return false;
+  }
+  return handled;
+}
+
+void SeeedmmWave::enqueueFrame(std::vector<uint8_t>&& frame) {
+  if (byteQueue.size() >= MMWaveMaxQueueSize) {
+    std::vector<uint8_t> oldest = std::move(byteQueue.front());
+    byteQueue.pop();
+    processFrame(oldest.data(), oldest.size());
+  }
+  byteQueue.push(std::move(frame));
 }
 
 std::vector<uint8_t> SeeedmmWave::packetFrame(uint16_t type,
@@ -346,71 +347,46 @@ bool SeeedmmWave::send(uint16_t type, const uint8_t* data, size_t data_len) {
 }
 
 void SeeedmmWave::fetch(uint32_t timeout) {
-  static bool startFrame = false;
-  static std::vector<uint8_t> frameBuffer;
-  uint32_t expire_time = millis() + timeout;
-  uint16_t frameDataSize;
+  if (!_serial) return;
+
+  const uint32_t expire_time = millis() + timeout;
   do {
-    size_t c_available = _serial->available();
-    while (c_available--) {
-      uint8_t byte = _serial->read();
-      if (startFrame)  // Frame processing
-      {
-        frameBuffer.push_back(byte);
-        // Serial.print("Read byte: ");
-        // Serial.println(byte, HEX);
-        if (frameBuffer.size() >= SIZE_FRAME_HEADER)  // right package
-        {
-          frameDataSize = (frameBuffer[3] << 8 | frameBuffer[4]);
-          if (frameDataSize > FRAME_BUFFER_SIZE) {
-            startFrame = false;
-            continue;
-          }
-          if (frameBuffer.size() ==
-              (SIZE_FRAME_HEADER + frameDataSize + SIZE_DATA_CKSUM)) {
-            if (byteQueue.size() >= MMWaveMaxQueueSize) {
-              byteQueue.pop();  // Discard the oldest frame
-              // Serial.println("Queue full, discarding oldest frame");
-            }
+    int c_available = _serial->available();
+    while (c_available-- > 0) {
+      const int raw = _serial->read();
+      if (raw < 0) break;
+      const auto result = _assembler.feed(static_cast<uint8_t>(raw));
+      if (result == seeed::mmwave::FrameAssembler::FeedResult::FrameReady) {
+        std::vector<uint8_t> frame = _assembler.takeFrame();
 #if _MMWAVE_DEBUG == 1
-            printHexBuff(frameBuffer);
+        printHexBuff(frame);
 #endif
-            byteQueue.push(frameBuffer);  // Add the complete frame to the queue
-            startFrame = false;
-          }
-        }
-      } else {
-        if (byte == SOF_BYTE) {  // Start of frame
-          startFrame = true;
-          frameBuffer.clear();
-          frameBuffer.push_back(byte);  // insert 0x01
-          // Serial.println("Start of Frame detected 0x01");
-        }
+        enqueueFrame(std::move(frame));
       }
     }
   } while (millis() < expire_time);
 }
 
 bool SeeedmmWave::processQueuedFrames(uint16_t data_type, uint32_t timeout) {
-  bool result = false;
-
   if (byteQueue.empty()) {
     return false;
   }
 
-  uint32_t expire_time = millis() + timeout;
+  bool result                = false;
+  const uint32_t expire_time = millis() + timeout;
   do {
-    std::vector<uint8_t> frame = byteQueue.front();
+    std::vector<uint8_t> frame = std::move(byteQueue.front());
     byteQueue.pop();
 #if _MMWAVE_DEBUG == 1
-    printHexBuff(frame);  // Print received bytes
+    printHexBuff(frame);
 #endif
-    if (!this->processFrame(frame.data(), frame.size(), data_type)) {
-      continue;
-    } else {
+    if (this->processFrame(frame.data(), frame.size(), data_type)) {
       result = true;
     }
-  } while (!byteQueue.empty() && timeout);
+    if (timeout == 0) {
+      break;
+    }
+  } while (!byteQueue.empty() && millis() < expire_time);
 
   return result;
 }

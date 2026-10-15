@@ -1,8 +1,8 @@
 # Seeed Arduino mmWave Library For XIAO
 
-> **Status (2026-04-19):** `main` is still the shipped **v1.0.0**. Two newer
-> versions are staged as GitHub prereleases and **have not yet been validated
-> on real hardware** — do not rely on them in production yet.
+> **Status (2026-10-15):** `main` ships **v1.0.1** (UART assembler, presence
+> getter, and host CI). Two newer versions are staged as GitHub prereleases
+> and **have not yet been validated on real hardware**.
 >
 > - [**v1.1.0-rc1**](https://github.com/Love4yzp/Seeed-mmWave-library/releases/tag/v1.1.0-rc1)
 >   (branch `release/1.1.0-rc`) — housekeeping only: example reorg,
@@ -21,6 +21,12 @@
 > unaffected. Roadmap and deferred work live in
 > [`ROADMAP.md`](https://github.com/Love4yzp/Seeed-mmWave-library/blob/v2-dev/ROADMAP.md)
 > on the `v2-dev` branch.
+
+The 1.0.1 UART receiver checks `HEAD_CKSUM` as soon as eight bytes arrive,
+re-locks onto the next `0x01` after a bad header, and applies completed
+vital-sign frames when people-counting reports fill the queue.
+`isHumanDetected()` returns the last reported presence. Call
+`SeeedmmWave::resync()` after a noisy power-on to restart frame lock.
 
 ## Introduction
 
@@ -64,6 +70,12 @@ To begin using the library, include it in your Arduino sketch and refer to the e
 ## API Reference
 
 Please refer to the comments in the source code for detailed information on the available methods and parameters.
+
+Host-side protocol tests (no hardware) live under `test/test_framecodec/` and run with:
+
+```
+pio test -e native
+```
 
 ## License
 

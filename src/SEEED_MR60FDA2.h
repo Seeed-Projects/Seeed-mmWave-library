@@ -45,11 +45,10 @@ class SEEED_MR60FDA2 : public SeeedmmWave {
 
   /*set height*/
   bool _isHeightValid = false;
-  bool _isThresholdValid;    // 0 : Failed to obtain  1 : acquisition successful
-  bool _isAlarmAreaValid;    // 0 : Failed to obtain  1 : acquisition
-                             // successful
-  bool _isSensitivityValid;  // 0 : Failed to obtain  1 : acquisition successful
-  bool _isHuman;             // 0 : no one            1 : There is someone
+  bool _isThresholdValid   = false;
+  bool _isAlarmAreaValid   = false;
+  bool _isSensitivityValid = false;
+  bool _isHuman            = false;
 
   /* get fall detection*/
   bool _isFall = false;

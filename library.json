@@ -1,7 +1,7 @@
 {
 	"name": "Seeed Arduino mmWave",
 	"keywords": "arduino, seeedstudio, mmwave, sensor, breathing, heartbeat, fall detection",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Arduino library for XIAO to interact with Seeed mmWave modules for breathing, heartbeat, and fall detection.",
 	"author": "Seeed Studio",
 	"maintainers": [

@@ -266,11 +266,13 @@ bool SEEED_MR60FDA2::handleType(uint16_t _type, const uint8_t* data,
   TypeFallDetection type = static_cast<TypeFallDetection>(_type);
   switch (type) {
     case TypeFallDetection::ReportFallDetection:
-      _isFall      = *(const bool*)data;
+      if (data_len < 1) return false;
+      _isFall      = data[0] != 0;
       _isFallValid = true;
       break;
     case TypeFallDetection::ReportUnmannedDetection:
-      _isHuman      = *(const uint8_t*)data;
+      if (data_len < 1) return false;
+      _isHuman      = data[0] != 0;
       _isHumanValid = true;
       break;
     case TypeFallDetection::InstallationHeight: {
@@ -280,7 +282,7 @@ bool SEEED_MR60FDA2::handleType(uint16_t _type, const uint8_t* data,
       break;
     }
     case TypeFallDetection::RadarParameters: {
-      if (data_len <= 1)
+      if (data_len < (6 * sizeof(float) + sizeof(uint32_t)))
         return false;
       _height          = extractFloat(data);
       _thershold       = extractFloat(data + sizeof(float));
