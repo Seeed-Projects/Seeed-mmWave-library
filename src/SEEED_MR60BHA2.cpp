@@ -1,11 +1,58 @@
 #include "SEEED_MR60BHA2.h"
 
+namespace {
+constexpr size_t kTargetNSize =
+    sizeof(float) + sizeof(float) + sizeof(int32_t) + sizeof(int32_t);
+}  // namespace
+
+/**
+ * @brief Copy at most `max_keep` TargetN records from a people-counting payload.
+ * @param data Payload bytes (count + records).
+ * @param data_len Payload length.
+ * @param max_keep Allocation cap (people vs point-cloud).
+ * @param out Destination vector.
+ * @return true when the count field is present.
+ *
+ * 从人数/点云载荷里按长度上限拷贝目标记录。
+ */
+bool SEEED_MR60BHA2::extractTargets(const uint8_t* data, size_t data_len,
+                                    size_t max_keep,
+                                    std::vector<TargetN>& out) {
+  if (data_len < sizeof(uint32_t)) {
+    return false;
+  }
+  size_t target_num          = extractU32(data);
+  const size_t available = (data_len - sizeof(uint32_t)) / kTargetNSize;
+  if (target_num > available) {
+    target_num = available;
+  }
+  if (target_num > max_keep) {
+    target_num = max_keep;
+  }
+
+  data += sizeof(uint32_t);
+  out.clear();
+  out.reserve(target_num);
+  for (size_t i = 0; i < target_num; ++i) {
+    TargetN target;
+    target.x_point       = extractFloat(data);
+    data += sizeof(float);
+    target.y_point       = extractFloat(data);
+    data += sizeof(float);
+    target.dop_index     = static_cast<int32_t>(extractU32(data));
+    data += sizeof(int32_t);
+    target.cluster_index = static_cast<int32_t>(extractU32(data));
+    data += sizeof(int32_t);
+    out.push_back(target);
+  }
+  return true;
+}
+
 /**
  * @brief Handle different types of heart and breath data.
  *
  * This function processes different types of heart and breath data based on
- * the type identifier. It first deletes any existing objects to avoid memory
- * leaks.
+ * the type identifier.
  *
  * @param _type The type identifier of the data.
  * @param data The pointer to the data buffer.
@@ -18,6 +65,7 @@ bool SEEED_MR60BHA2::handleType(uint16_t _type, const uint8_t* data,
   TypeHeartBreath type = static_cast<TypeHeartBreath>(_type);
   switch (type) {
     case TypeHeartBreath::TypeHeartBreathPhase: {
+      if (data_len < 3 * sizeof(float)) return false;
       _heart_breath.total_phase  = extractFloat(data);
       _heart_breath.breath_phase = extractFloat(data + sizeof(float));
       _heart_breath.heart_phase  = extractFloat(data + 2 * sizeof(float));
@@ -25,89 +73,48 @@ bool SEEED_MR60BHA2::handleType(uint16_t _type, const uint8_t* data,
       break;
     }
     case TypeHeartBreath::TypeBreathRate: {
+      if (data_len < sizeof(float)) return false;
       _breath_rate       = extractFloat(data);
       _isBreathRateValid = true;
       break;
     }
     case TypeHeartBreath::TypeHeartRate: {
+      if (data_len < sizeof(float)) return false;
       _heart_rate       = extractFloat(data);
       _isHeartRateValid = true;
       break;
     }
     case TypeHeartBreath::TypeHeartBreathDistance: {
+      if (data_len < sizeof(uint32_t) + sizeof(float)) return false;
       _rangeFlag       = extractU32(data);
       _range           = extractFloat(data + sizeof(uint32_t));
       _isDistanceValid = true;
       break;
     }
     case TypeHeartBreath::ReportHumanDetection: {
-      _isHumanDetected = data[0];
+      if (data_len < 1) return false;
+      _isHumanDetected       = data[0] != 0;
       _isHumanDetectionValid = true;
       break;
     }
     case TypeHeartBreath::Report3DPointCloudDetection: {
-      size_t target_num = extractU32(data);  // Extract target quantity
-      data += sizeof(uint32_t);
-
-      std::vector<TargetN> received_targets; // Used to store parsed target data
-      received_targets.reserve(target_num);
-
-      for(size_t i = 0; i < target_num; i++)
-      {
-        TargetN target;
-        target.x_point = extractFloat(data);
-        data += sizeof(float);
-
-        target.y_point = extractFloat(data);
-        data += sizeof(float);
-
-        target.dop_index = extractU32(data);
-        data += sizeof(int32_t);
-
-        target.cluster_index = extractU32(data);
-        data += sizeof(int32_t);
-
-        received_targets.push_back(target); // Add the resolved target to the container
+      if (!extractTargets(data, data_len, MAX_POINT_CLOUD_NUM,
+                          _people_counting_point_cloud.targets)) {
+        return false;
       }
-
-      // Store the received target data in the PeopleCounting object
-      _people_counting_point_cloud.targets = std::move(received_targets);
       _isPeopleCountingPointCloudValid = true;
-
       break;
     }
     case TypeHeartBreath::Report3DPointCloudTargetInfo: {
-      size_t target_num = extractU32(data);  // Extract target quantity
-      data += sizeof(uint32_t);
-
-      std::vector<TargetN> received_targets; // Used to store parsed target data
-      received_targets.reserve(target_num);
-
-      for(size_t i = 0; i < target_num; i++)
-      {
-        TargetN target;
-        target.x_point = extractFloat(data);
-        data += sizeof(float);
-
-        target.y_point = extractFloat(data);
-        data += sizeof(float);
-
-        target.dop_index = extractU32(data);
-        data += sizeof(int32_t);
-
-        target.cluster_index = extractU32(data);
-        data += sizeof(int32_t);
-
-        received_targets.push_back(target); // Add the resolved target to the container
+      if (!extractTargets(data, data_len, MAX_TARGET_NUM,
+                          _people_counting_target_info.targets)) {
+        return false;
       }
-
-      // Store the received target data in the PeopleCounting object
-      _people_counting_target_info.targets = std::move(received_targets);
       _isPeopleCountingTargetInfoValid = true;
-
       break;
     }
     case TypeHeartBreath::ReportFirmware: {
+      if (data_len < sizeof(uint32_t)) return false;
       _firmware_info.value = extractU32(data);
       _isFirmwareInfoValid = true;
       break;
@@ -148,10 +155,12 @@ bool SEEED_MR60BHA2::getHeartRate(float& rate) {
 }
 
 bool SEEED_MR60BHA2::getDistance(float& distance) {
-  if (!_isDistanceValid || !_rangeFlag)
+  if (!_isDistanceValid)
     return false;
   _isDistanceValid = false;
-  distance         = _range;
+  if (!_rangeFlag)
+    return false;
+  distance = _range;
   return true;
 }
 
@@ -172,9 +181,6 @@ bool SEEED_MR60BHA2::getPeopleCountingTargetInfo(PeopleCounting& target_info) {
 }
 
 bool SEEED_MR60BHA2::isHumanDetected() {
-  if (!_isHumanDetectionValid)
-    return false;
-  _isHumanDetectionValid = false;
   return _isHumanDetected;
 }
 

@@ -16,6 +16,7 @@
 #include "SeeedmmWave.h"
 
 #define MAX_TARGET_NUM    3
+#define MAX_POINT_CLOUD_NUM 32
 
 #define RANGE_STEP 17.28f
 
@@ -65,26 +66,26 @@ class SEEED_MR60BHA2 : public SeeedmmWave {
   HeartBreath _heart_breath = {0};
 
   /* BreathRate */
-  float _breath_rate;
+  float _breath_rate = 0;
 
   /* HeartRate */
-  float _heart_rate;
+  float _heart_rate = 0;
 
   /* HeartBreathDistance */
-  uint32_t _rangeFlag;
-  float _range;
+  uint32_t _rangeFlag = 0;
+  float _range        = 0;
 
   /* HumanDetection */
-  bool _isHumanDetected;             // 0 : no one            1 : There is someone
-  bool _isHumanDetectionValid;
+  bool _isHumanDetected      = false;  // last reported presence
+  bool _isHumanDetectionValid = false;
 
   /* PeopleCounting PointCloud */
   PeopleCounting _people_counting_point_cloud;
-  bool _isPeopleCountingPointCloudValid;
- 
+  bool _isPeopleCountingPointCloudValid = false;
+
   /* PeopleCounting TargetInfo */
   PeopleCounting _people_counting_target_info;
-  bool _isPeopleCountingTargetInfoValid;
+  bool _isPeopleCountingTargetInfoValid = false;
 
 
   FirmwareInfo _firmware_info;
@@ -112,6 +113,10 @@ class SEEED_MR60BHA2 : public SeeedmmWave {
   bool getPeopleCountingTargetInfo(PeopleCounting& target_info);
   bool isHumanDetected();
   bool getFirmwareInfo(FirmwareInfo& firmware_info);
+
+ private:
+  bool extractTargets(const uint8_t* data, size_t data_len, size_t max_keep,
+                      std::vector<TargetN>& out);
 };
 
 #endif /*SEEED_MR60BHA2_H*/

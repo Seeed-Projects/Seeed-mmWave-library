@@ -21,6 +21,8 @@
 #include <memory>
 #include <queue>
 
+#include "FrameAssembler.h"
+
 #ifndef _MMWAVE_DEBUG
   #define _MMWAVE_DEBUG 0
 #endif
@@ -61,11 +63,15 @@
 
 class SeeedmmWave {
  private:
-  HardwareSerial* _serial;
-  uint32_t _baud;
-  uint32_t _wait_delay;
+  HardwareSerial* _serial = nullptr;
+  uint32_t _baud          = 0;
+  uint32_t _wait_delay    = 0;
 
   std::queue<std::vector<uint8_t>> byteQueue;
+  seeed::mmwave::FrameAssembler _assembler;
+
+  void enqueueFrame(std::vector<uint8_t>&& frame);
+  void drainSerial();
 
  protected:
   size_t expectedFrameLength(const std::vector<uint8_t>& buffer);
@@ -109,6 +115,14 @@ class SeeedmmWave {
 
   void begin(HardwareSerial* serial, uint32_t baud = _UART_BAUD,
              uint32_t wait_delay = 1, int rst = -1);
+
+  /**
+   * @brief Drop in-flight UART bytes and restart frame lock.
+   *
+   * 清空串口残留并重新锁定帧头，用于上电噪声或失步后的恢复。
+   */
+  void resync();
+
   int available();
   int read(void);
   int read(char* data, int length);

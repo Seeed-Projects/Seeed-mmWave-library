@@ -1,3 +1,5 @@
 .vscode
 archieve
 debug*
+.pio/
+.pio*
